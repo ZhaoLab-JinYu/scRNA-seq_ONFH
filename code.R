@@ -208,7 +208,7 @@ DimPlot(seurat_integrated,
         label=T,
         pt.size = 0.3)
 
-############################ 7.Clustering ############################
+############################ 8.Clustering ############################
 
 
 seurat_integrated <- FindNeighbors(object = seurat_integrated, 
@@ -241,7 +241,7 @@ DimPlot(seurat_integrated,
         label = TRUE,
         label.size = 6)
 
-######################## 8.SingleR (optional) #########################
+######################## 9.SingleR (optional) #########################
 
 # Load reference data(downloaded from SingleR github)
 hpca.se <- readRDS(file = "ref/hpca.se.rds")
@@ -276,7 +276,7 @@ DimPlot(seurat_integrated,
         label = TRUE,
         label.size = 6)
 
-####################### 9.Findmarkers ###################
+####################### 10.Findmarkers ###################
 
 DefaultAssay(seurat_integrated) <- "RNA"
 
@@ -311,7 +311,7 @@ DoHeatmap(object = seurat_integrated,
           label = FALSE) +
   scale_fill_gradientn(colors = c("#1976d2","white", "#c62828"))
 
-############################ 10.Monocle ##############################
+############################ 11.Monocle ##############################
 
 library(monocle)
 
@@ -378,7 +378,7 @@ plot_genes_branched_heatmap(Mono.cds[row.names(subset(BEAM_res100,
                             show_rownames = T)
 
 
-############################ 11.CellChat #########################
+############################ 12.CellChat #########################
 
 library(CellChat)
 library(ggplot2)
@@ -445,12 +445,13 @@ rankNet(cellchat,
 
 plotGeneExpression(cellchat, features = "AEBP1")
 
-########################### 12.Spearman #######################
+########################### 13.Spearman #######################
 
 library('openxlsx')
 library('corrplot')
 library('PerformanceAnalytics') 
-seurat_integrated <- readRDS('results/MSC_ONFH_PC40_RES1.02.rds')
+
+seurat_integrated <- readRDS('results/MSC_ONFH.rds')
 seurat_integrated <- subset(seurat_integrated, idents = list('26'))
 DefaultAssay(seurat_integrated) <- "RNA"
 markers <- read.csv('results/onfh_markers.csv')
@@ -467,7 +468,7 @@ corrplot(cor,
          addCoef.col="grey",
          diag = F)
 
-############################  13.Go ###########################
+############################  14.Go ###########################
 
 library(ggplot2)
 library(clusterProfiler)
