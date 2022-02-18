@@ -540,8 +540,103 @@ ego_MF <- enrichGO(gene = gene_up,
                    pvalueCutoff = 0.01,
                    qvalueCutoff = 0.01,
                    readable = TRUE)
+##########################  15.scenic  ####################
+library(Seurat)
+library(SCENIC)
+library(AUCell)
 
-##########################  14.Plots #######################
+dir.create("int")
+onfh.EC <- readRDS(file = 'onfh.EC.rds')
+exprMat<-GetAssayData(object = EC1.subset, assay = 'RNA',slot = "counts")
+exprMat <- as(Class = 'matrix', object = exprMat)
+saveRDS(exprMat, file="int/exprMat.Rds")
+exprMat <- readRDS("int/exprMat.Rds")
+
+cellInfo<- data.frame(seuratCluster=Idents(EC1.subset))
+nGene <- onfh.EC@meta.data$nFeature_RNA
+nGene <- as.data.frame(nGene)
+nUMI <- onfh.EC@meta.data$nCount_RNA
+nUMI <- as.data.frame(nUMI)
+cellInfo["nGene"] <- nGene
+cellInfo["nUMI"] <- nUMI
+cellInfo <- data.frame(onfh.EC@meta.data[,c(2,3,13)])
+cellTypeColumn <- "seuratCluster"
+colnames(cellInfo)[which(colnames(cellInfo)==cellTypeColumn)] <- "CellType"
+saveRDS(cellInfo, file="int/cellInfo.Rds")
+cellInfo <- readRDS("int/cellInfo.Rds")
+colVars <- list(CellType=c("EC1"="forestgreen", 
+                           "EC2"="darkorange"))
+colVars$CellType <- colVars$CellType[intersect(names(colVars$CellType), cellInfo$CellType)]
+plot.new(); legend(0,1, fill=colVars$CellType, legend=names(colVars$CellType))
+saveRDS(colVars, file="int/colVars.Rds")
+colVars <- readRDS("int/colVars.Rds")
+org <- "hgnc" # or mgi, or dmel
+dbDir <- "cisTarget_databases" # RcisTarget databases location
+myDatasetTitle <- "SCENIC analysis on Human femur head" # Create a name for your analysis
+data(defaultDbNames)
+dbs <- defaultDbNames[[org]]
+scenicOptions <- initializeScenic(org=org, 
+                                  dbDir=dbDir, 
+                                  dbs=dbs, 
+                                  datasetTitle=myDatasetTitle, 
+                                  nCores=10) 
+scenicOptions@inputDatasetInfo$cellInfo <- "int/cellInfo.Rds"
+scenicOptions@inputDatasetInfo$colVars <- "int/colVars.Rds"
+saveRDS(scenicOptions, file="int/scenicOptions.Rds") 
+scenicOptions <- readRDS("int/scenicOptions.Rds")
+genesKept <- geneFiltering(exprMat, scenicOptions)
+exprMat_filtered <- exprMat[genesKept, ]
+interestingGenes <- c("ACKR1")
+interestingGenes[which(!interestingGenes %in% genesKept)]
+runCorrelation(exprMat_filtered, scenicOptions)
+exprMat_filtered_log <- log2(exprMat_filtered+1) 
+runGenie3(exprMat_filtered_log, scenicOptions)
+save(exprMat_filtered_log,scenicOptions,file = "int/GENIE3_data.Rdata")
+load("int/GENIE3_data.Rdata")
+
+library(SCENIC)
+scenicOptions <- readRDS("int/scenicOptions.Rds")
+scenicOptions@settings$verbose <- TRUE
+scenicOptions@settings$nCores <- 10
+scenicOptions@settings$seed <- 123
+
+exprMat_log <- log2(exprMat+1)
+scenicOptions@settings$dbs <- scenicOptions@settings$dbs["10kb"] # Toy run settings
+runSCENIC_1_coexNetwork2modules(scenicOptions)
+runSCENIC_2_createRegulons(scenicOptions,coexMethod="top5perTarget") # Toy run settings  , coexMethod=c("top5perTarget"
+runSCENIC_3_scoreCells(scenicOptions, exprMat_log) # exprMat_filtered
+
+saveRDS(scenicOptions, file="int/scenicOptions.Rds") # To save status
+
+# RSS
+regulonAUC <- loadInt(scenicOptions, "aucell_regulonAUC")
+rss <- calcRSS(AUC=getAUC(regulonAUC), cellAnnotation=cellInfo[colnames(regulonAUC), "CellType"], )
+rssPlot <- plotRSS(rss)
+plotly::ggplotly(rssPlot$plot)
+
+plotRSS_oneSet(rss,setName = 'EC1',n=5)
+
+
+regulonAUC <- loadInt(scenicOptions, "aucell_regulonAUC")
+regulonAUC <- regulonAUC[onlyNonDuplicatedExtended(rownames(regulonAUC)),]
+regulonActivity_byCellType <- sapply(split(rownames(cellInfo), cellInfo$CellType),
+                                     function(cells) rowMeans(getAUC(regulonAUC)[,cells]))
+
+regulonActivity_byCellType_Scaled <- t(scale(t(regulonActivity_byCellType), center = T, scale=T))
+
+pheatmap::pheatmap(regulonActivity_byCellType_Scaled, #fontsize_row=3, 
+                   color=colorRampPalette(c("blue","white","red"))(100), breaks=seq(-3, 3, length.out = 100),
+                   treeheight_row=10, treeheight_col=10, border_color=NA)
+
+c("ETS1","KLF3","NR2F2", "JUN",'EGR1','JUNB','JUND','KLF6','FOS','FOSL1','STAT3')
+
+dr_coords <- Embeddings(onfh.EC, reduction="umap")
+
+tfs <- c("PPARG")
+#par(mfrow=c(2,2))
+AUCell::AUCell_plotTSNE(dr_coords, cellsAUC=selectRegulons(regulonAUC, tfs), plots = "Binary")+ylim(-13,-7)+xlim(-10,0)
+
+##########################  16.Plots #######################
 
 DefaultAssay(seurat_integrated) <- "RNA"
 
