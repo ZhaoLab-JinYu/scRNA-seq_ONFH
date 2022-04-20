@@ -719,3 +719,40 @@ EnhancedVolcano(compare_markers,
                 FCcutoff = 0.5,
                 ylim = c(0,60),
                 colAlpha = 1)
+
+                                     
+################# test code #####################
+##########################  Slingshot #####################
+
+library(slingshot)
+library(SingleCellExperiment)
+library(grDevices)
+library(RColorBrewer)
+seurat_integrated <- readRDS('results/EC_ONFH_PC40_RES1.02.rds')
+
+seurat_integrated_sce <- as.SingleCellExperiment(seurat_integrated, assay = 'RNA')
+
+sce <- slingshot(seurat_integrated_sce,
+                       clusterLabels = 'ident',
+                       reducedDim = 'UMAP',
+                       approx_points = 200)
+
+summary(sce$slingPseudotime_1)
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce$slingPseudotime_1, breaks=100)]
+
+plot(reducedDims(sce)$UMAP, col = brewer.pal(9,'Set1')[sce$ident], pch=16, asp = 1)
+lines(SlingshotDataSet(sce), lwd=2, type = 'lineages', col = 'black')
+
+library(tradeSeq)
+sce <- fitGAM(sce)
+ATres <- associationTest(sce)
+topgenes <- rownames(ATres[order(ATres$pvalue), ])[1:250]
+pst.ord <- order(sce$slingPseudotime_1, na.last = NA)
+heatdata <- assays(sce)$counts[topgenes, pst.ord]
+heatclus <- sce$GMM[pst.ord]
+
+heatmap(log1p(heatdata), Colv = NA,
+        ColSideColors = brewer.pal(9,"Set1")[heatclus])
+                                     
+                                     
