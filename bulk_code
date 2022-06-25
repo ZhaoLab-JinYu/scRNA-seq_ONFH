@@ -1,38 +1,45 @@
-
 ################################  1.loading environment #########################
 library(DESeq2) 
 library(dplyr)
 library(clusterProfiler)
 library(RColorBrewer)
-library(ggplot)
+library(ggplot2)
 library(corrplot)
-library(org.Hs.eg.db)
+library(stringr)
+
+#不同种属的样本加载不同的参考数据库
+library(org.Hs.eg.db)  #人类
+library(org.Mm.eg.db)  #小鼠
+library(org.Rn.eg.db)  #大鼠
 
 rm(list = ls())
-setwd("D:/research")
+setwd("D:/research/results/fsh")
 getwd()
 
 ################################  2.loading data  ##################
 
-#读表达矩阵
+#读表达矩阵，整理表达矩阵格式
+#GeneID为行名，样本ID为列名
 read.count <- read.delim("gene_count.xls")
 row.names(read.count) <- read.count$gene_id
-read.count <- read.count[,c(-1,-3,-6)]
+read.count <- read.count[,c(2,3,4,5,6,7)]
 
-#设置样本信息
-
+#设置样本信息和分组矩阵
 sample.information <- data.frame(colnames(read.count))
 colnames(sample.information) <- "ID"
 row.names(sample.information) <- sample.information$ID
-sample.information$group <- c("NEG","POS",'POS') 
+#此处输入样本的分组情况
+sample.information$group <- c('ctr','ctr','ctr','ko','ko','ko') 
 
 ##################################   3.DEseq2   ################################
 
-#构建DEseq矩阵
-dds <- DESeqDataSetFromMatrix(countData = read.count, colData = sample.information, design = ~group) 
+#构建DEseq矩阵,需要一个表达矩阵和分组矩阵
+dds <- DESeqDataSetFromMatrix(countData = read.count, 
+                              colData = sample.information, 
+                              design = ~group) 
 
 #过滤低表达基因，至少在1个样品中都有10个reads 
-dds.temporary <- rowSums(counts(dds) >= 5) >= 1  
+dds.temporary <- rowSums(counts(dds) >= 10) >= 1  
 dds <- dds[dds.temporary,] 
 
 #运行DEseq2
@@ -42,7 +49,7 @@ dds <- DESeq(dds)
 vsdata <- rlog(dds, blind=FALSE)  #归一化(样本数小于30用rlog函数)
 plotPCA(vsdata, intgroup = "group") #绘制样本的PCA图
 
-result <- results(dds,alpha = 0.1) #导出结果
+result <- results(dds) #导出结果
 summary(result) #查看结果的概览
 sum(result$padj<0.1, na.rm = TRUE) #检查pvalue<0.1的基因个数
 
@@ -50,7 +57,11 @@ res_data <- merge(as.data.frame(result), #DEseq2的检验结果
                   as.data.frame(counts(dds,normalize=TRUE)), #用DEseq2 normalize后的表达矩阵
                   by="row.names",sort=FALSE) # 合并DEseq2的结果与标准化之后的表达矩阵
 
-Symbol <- bitr(res_data$Row.names,fromType = 'ENSEMBL',toType = 'SYMBOL',OrgDb = "org.Hs.eg.db") # ENSEMBL ID转基因名
+Symbol <- bitr(res_data$Row.names,
+               fromType = 'ENSEMBL',
+               toType = 'SYMBOL',
+               OrgDb = "org.Mm.eg.db") # ENSEMBL ID转基因名，注意种属参考数据库
+
 res_data <- res_data[res_data$Row.names%in%Symbol$ENSEMBL,] #有部分ID转换失败，去除之
 Symbol <- Symbol[!duplicated(Symbol$ENSEMBL),] #有部分ID转换失败，去除之
 rownames(res_data) <- res_data$Row.names #改变行名称
@@ -58,119 +69,187 @@ rownames(Symbol) <- Symbol$ENSEMBL #改变行名称
 res_data <- cbind(res_data, Symbol) #把基因名放到res_data里，列名为SYMBOL
 res_data <- res_data[!duplicated(res_data$SYMBOL),] #去掉SYMBOL列里重复的行
 
-up_DEG <- subset(res_data, padj < 0.1 & log2FoldChange > 0) #筛选上调基因
+up_DEG <- subset(res_data, padj < 0.05 & log2FoldChange > 0.25) #筛选上调基因
 up_DEG$cluster <- "up"
-down_DEG <- subset(res_data, padj < 0.1 & log2FoldChange < 0) #筛选下调基因
+down_DEG <- subset(res_data, padj < 0.05 & log2FoldChange < 0.25) #筛选下调基因
 down_DEG$cluster <- "down"
 
+### 将全部基因的信息以及上下调基因的信息写入csv
+write.csv(res_data, "DEG_results.csv") 
+write.csv(up_DEG, "DEG_up.csv")
+write.csv(down_DEG, "DEG_down.csv")
 
-####### 将全部基因的信息以及上下调基因的信息写入csv
-write.csv(res_data, "all.csv") 
-write.csv(up_DEG, "up.csv")
-write.csv(down_DEG, "down.csv")
+################################ 4.GO 分析 ######################
+deg1 <- read.csv(file = 'DEG_results.csv')
 
-################################
-up_and_down_gene <- rbind(down_DEG, up_DEG) #合并两个表格
-rownames(up_and_down_gene) <- up_and_down_gene$SYMBOL
-
-
-bulk_top <- top_n(res_data,n = 500,wt = log2FoldChange)
-
-sc_markers <- read.csv(file = 'results/onfh_markers.csv')
-sc_markers <- sc_markers[sc_markers$cluster == 4,]
-sc_top <- top_n(sc_markers,n = 500,wt = avg_logFC)
+### 去除ribosome基因,排除干扰（optional）
+deg1<- deg1[!str_detect(deg1$SYMBOL,c('Rpl','Rps')),]
 
 
-library(ggVennDiagram)
-library(ggplot2)
-ggVennDiagram(list(up_DEG$SYMBOL,sc_markers$gene),
-              category.names = c('BULK','SC'))
+#整理上调基因序列和下调基因序列
+k1 = (deg1$padj < 0.05)&(deg1$log2FoldChange < -0.25)
+k2 = (deg1$padj < 0.05)&(deg1$log2FoldChange > 0.25)
+change = ifelse(k1,"down",ifelse(k2,"up","stable"))
+deg1$change <- change
 
-ggVennDiagram(list(bulk_top$SYMBOL,sc_top$gene),
-              category.names = c('BULK','SC'))
+s2e <- bitr(deg1$SYMBOL, 
+            fromType = "SYMBOL",
+            toType = "ENTREZID",
+            OrgDb = org.Mm.eg.db) 
 
-target_gene <- intersect(bulk_top$SYMBOL,sc_top$gene)
-
-##### 绘制heatmap
-pdf("Normalized_count.pdf",20,25)
-heatmap.2(x = as.matrix(log2(up_and_down_gene[,c("")]+1)),
-          scale = "none", col=bluered(100), 
-          trace = "none", density.info = "none",
-          RowSideColors = MyName2Color(up_and_down_gene$cluster, palette = c("#d53e4f", "#3288bd")))
-dev.off()
-
+deg1 <- inner_join(deg1,s2e,by=c("SYMBOL"="SYMBOL"))
+gene_up = deg1[deg1$change == 'up','ENTREZID'] 
+gene_down = deg1[deg1$change == 'down','ENTREZID'] 
+gene_diff = c(gene_up,gene_down)
+gene_all = deg1[,'ENTREZID']
 
 
+#GO分析
+GO_UP_results <- enrichGO(gene = gene_up,
+                   OrgDb= org.Mm.eg.db,
+                   ont = "ALL",
+                   pAdjustMethod = "BH",
+                   minGSSize = 1,
+                   pvalueCutoff = 0.01,
+                   qvalueCutoff = 0.01,
+                   readable = TRUE)
+
+GO_DOWN_results <- enrichGO(gene = gene_down,
+                          OrgDb= org.Mm.eg.db,
+                          ont = "ALL",
+                          pAdjustMethod = "BH",
+                          minGSSize = 1,
+                          pvalueCutoff = 0.01,
+                          qvalueCutoff = 0.01,
+                          readable = TRUE)
+
+KEGG_UP_results  <- enrichKEGG(gene = gene_up,
+                 keyType = 'kegg',
+                 organism =	'mmu',
+                 pvalueCutoff = 0.01,
+                 qvalueCutoff = 0.01,
+                 minGSSize = 1)
+
+KEGG_DOWN_results  <- enrichKEGG(gene = gene_down,
+                               keyType = 'kegg',
+                               organism =	'mmu',
+                               pvalueCutoff = 0.01,
+                               qvalueCutoff = 0.01,
+                               minGSSize = 1)
+
+#作图
+pathway.show <- c('response to interferon-beta',
+                  'regulation of apoptotic signaling pathway',
+                  'regulation of protein serine/threonine kinase activity',
+                  'regulation of MAP kinase activity',
+                  'regulation of DNA-binding transcription factor activity')
+
+dotplot(GO_UP_results,
+        showCategory= pathway.show)
+
+#保存数据
+write.csv(GO_UP_results,file = 'GO_UP.csv')
+write.csv(GO_DOWN_results,file = 'GO_DOWN.csv')
+write.csv(KEGG_UP_results,file = 'KEGG_UP.csv')
+write.csv(KEGG_DOWN_results,file = 'KEGG_DOWN.csv')
+
+##################  5.GSEA分析  #############
+
+#整理GSEA所需的基因表达序列
+## 1.获取基因logFC
+geneList <- deg1$log2FoldChange
+## 2.命名
+names(geneList) = deg1$ENTREZID
+## 3.排序
+geneList = sort(geneList, decreasing = TRUE)
+head(geneList)
+
+# 5.1 KEGG数据库的GSEA分析
+GSEA_KEGG_results  <- gseKEGG(geneList = geneList,
+                                 organism     = 'mmu',
+                                 minGSSize    = 20,
+                                 pvalueCutoff = 0.05,
+                                 verbose      = FALSE)
+
+GO_KEGG_results  <- gseKEGG(geneList = geneList,
+                              organism     = 'mmu',
+                              minGSSize    = 20,
+                              pvalueCutoff = 0.05,
+                              verbose      = FALSE)
+#做GSEA图 
+library(enrichplot)
+pathway.id = "GO:0035458"
+gseaplot2(GSEA_GO_Clean_results, 
+          color = "red",
+          geneSetID = pathway.id,
+          pvalue_table = T)
+
+#做通路渲染图（仅限KEGG）
+library(pathview)
+pathway.id = "mmu03010"
+pv.out <- pathview(gene.data  = geneList,
+                   pathway.id = pathway.id,
+                   species    = "mmu")
+
+pv.out <- pathview(gene.data  = geneList,
+                   pathway.id = pathway.id,
+                   species    = "mmu",
+                   kegg.native = F)
+
+# 5.2 GO数据库的GSEA分析
+
+GSEA_GO_Clean_results <- gseGO(geneList     =  geneList,
+             OrgDb        = org.Mm.eg.db,
+             ont          = "ALL", 
+             pvalueCutoff = 0.05, 
+             pAdjustMethod = "BH")
 
 
-
-##### 样本间相关性分析
-cor.sample <- cor(up_and_down_gene[,c("")])#相关性分析函数
-pdf("correlation_afterNormalization.pdf",9,7) #做相关性分析图
-corrplot(cor.sample, method="number", type="upper", order="hclust", tl.col="black", tl.srt=45)
-dev.off()
-
-
-
-
-
-##### GO富集分析
-GO_database <- 'org.Hs.eg.db'
-universe <- bitr(Symbol$SYMBOL,fromType = 'SYMBOL',toType = 'ENTREZID',OrgDb = GO_database) #选取背景基因 并转换为ENTREZ ID
-gene.UPregulate <- bitr(up_DEG$SYMBOL,
-                        fromType = 'SYMBOL',toType = 'ENTREZID',OrgDb = GO_database)
-gene.DOWNregulate <- bitr(down_DEG$SYMBOL,
-                          fromType = 'SYMBOL',toType = 'ENTREZID',OrgDb = GO_database)
-
-GO.UP <- enrichGO(gene.UPregulate$ENTREZID,#GO富集分析
-                  OrgDb = GO_database,
-                  keyType = "ENTREZID",#设定读取的gene ID类型
-                  ont = "BP",#Biological Process）
-                  pvalueCutoff = 0.05,#设定p值阈值
-                  qvalueCutoff = 0.05,#设定q值阈值
-                  readable = T)
-GO.DOWN <- enrichGO(gene.DOWNregulate$ENTREZID,#GO富集分析
-                    OrgDb = GO_database,
-                    keyType = "ENTREZID",#设定读取的gene ID类型
-                    ont = "BP",
-                    pvalueCutoff = 0.05,#设定p值阈值
-                    qvalueCutoff = 0.05,#设定q值阈值
-                    readable = T)
-
-
-##### xxx相关基因表达量的变化
-#在kegg上找到xxx所在的xxx通路的下游基因xxx：即xxx，是受体基因  下游有xxx
+########### 6.具体基因表达量箱图 ##############
+#提取标准化后的表达矩阵
 rownames(res_data) <- res_data$SYMBOL
-gene.count_normalized <- res_data[,c("")]
+gene.count_normalized <- res_data[,c("Ctrl1",'Ctrl2','Ctrl3','Test1','Test2','Test3')]
+
+#写一个作图函数
 MyBoxplot_genecount <- function(read.count, gene){
   df <- as.data.frame(t(read.count[gene,]))
-  df$sample2 <- c("KO","KO","KO","WT","WT","WT")
+  df$sample2 <- c("ctr","ctr","ctr","ko","ko","ko")  #在这里输入组别
   colnames(df) <- c("Read_Count","Sample")
-  # print(df)
   ggplot(df, aes(x = Sample, y = Read_Count)) + 
     geom_boxplot() + 
     labs(title = gene) + 
     theme_bw() + #设置背景为无色
     theme(plot.title = element_text(face = "bold.italic", size = 19)) + #设置表格字体为斜体，以及字号大小
     theme(panel.grid = element_blank()) #设置标尺线为无色
-}#写个函数方便批量做图
+}
 
-pdf("xxx_associated_genes.pdf",4,4) #批量做图
-MyBoxplot_genecount(gene.count_normalized, "xxx")
-MyBoxplot_genecount(gene.count_normalized, "xxx")
-MyBoxplot_genecount(gene.count_normalized, "xxx")
-MyBoxplot_genecount(gene.count_normalized, "xxx")
+#批量做图
+pdf("XXX基因_associated_genes.pdf",4,4) 
+MyBoxplot_genecount(gene.count_normalized, "Stat1") #第二个变量填写想看的基因名
+MyBoxplot_genecount(gene.count_normalized, "Mx1")
+MyBoxplot_genecount(gene.count_normalized, "Ifit1")
+MyBoxplot_genecount(gene.count_normalized, "Irf7")
+MyBoxplot_genecount(gene.count_normalized, "Ifnb")
+MyBoxplot_genecount(gene.count_normalized, "Ifit2")
+MyBoxplot_genecount(gene.count_normalized, "Cxcl10")
+MyBoxplot_genecount(gene.count_normalized, "Eif2ak2")
+MyBoxplot_genecount(gene.count_normalized, "Tgtp2")
+MyBoxplot_genecount(gene.count_normalized, "Cdc34")
+MyBoxplot_genecount(gene.count_normalized, "Irgm1")
+MyBoxplot_genecount(gene.count_normalized, "Piezo2")
+MyBoxplot_genecount(gene.count_normalized, "Hif1a")
 dev.off()
 
+###################################  7.绘制火山图  #################
 
-##### 火山图
+MyBoxplot_genecount(gene.count_normalized, "A4")##### 火山图
 data_VolcanoMap <- res_data[,c("log2FoldChange", "padj", "SYMBOL")]
 data_VolcanoMap$UpDown <- "invariable" #加新的一列，列名为UpDown，方便做图的时候分类
 data_VolcanoMap[data_VolcanoMap$SYMBOL%in%up_DEG$SYMBOL,]$UpDown <- "UP_regulated"
 data_VolcanoMap[data_VolcanoMap$SYMBOL%in%down_DEG$SYMBOL,]$UpDown <- "DOWN_regulated"
 data_VolcanoMap$nega_logPadj <- -log10(data_VolcanoMap$padj) #对Pvalue adj取负log10
 
-pdf("VolcanoMap.pdf",6.6,5)
+pdf("VolcanoMap.pdf",6,10)
 ggplot(data = data_VolcanoMap) +
   geom_point(aes(x=log2FoldChange, y=nega_logPadj, color=UpDown)) +
   labs(title="Volcano Plot") +
@@ -180,7 +259,7 @@ dev.off()
 
 
 
-################# TEST CODE ################
+################# 8.TEST CODE ################
 
 library(clusterProfiler)
 library(org.Mm.eg.db)
@@ -215,4 +294,3 @@ MyName2Color <- function(name,
   }
   return(name.color)
 } 
-
